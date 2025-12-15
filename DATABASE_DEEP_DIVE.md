@@ -1,6 +1,6 @@
-# Database Deep Dive – Oracle & PostgreSQL
+# Database Deep Dive – Oracle, PostgreSQL, MongoDB & Architecture
 
-Expert-level interview questions for 16+ years of experience covering setup, infrastructure, performance tuning, and real-world problem-solving. Each question includes **five levels of follow-up depth**.
+Expert-level interview questions for 16+ years of experience covering setup, infrastructure, performance tuning, database selection strategies, and real-world problem-solving. Each question includes **five levels of follow-up depth**.
 
 ---
 
@@ -304,4 +304,208 @@ CREATE POLICY tenant_policy ON orders
 
 ---
 
+## 6. MongoDB – NoSQL Database
+
+### Q11: Design a sharded MongoDB cluster for a high-traffic e-commerce platform. What shard key would you choose for the orders collection?
+**Answer:**
+Use **hashed sharding** on `user_id` for even data distribution, or **range sharding** on `order_date` if queries are time-based. Deploy config servers (3-node replica set), mongos routers, and at least 2 shard replica sets. Enable zone sharding for geo-distributed data.
+
+#### Follow-up Depth 1
+**Q:** What is the difference between hashed and ranged shard keys?
+**A:** Hashed sharding distributes data evenly using a hash function, preventing hotspots but losing range query locality. Ranged sharding preserves order, enabling efficient range queries but risking hotspots on monotonically increasing keys.
+
+##### Follow-up Depth 2
+**Q:** Why would hashing `order_date` as a shard key be problematic?
+**A:** All writes go to the most recent chunk (latest date), creating a single-shard hotspot. Use compound keys like `{user_id: hashed, order_date: 1}` or hash a more evenly distributed field.
+
+###### Follow-up Depth 3
+**Q:** How do you diagnose an unbalanced sharded cluster?
+**A:** Check `sh.status()` for chunk distribution per shard. Query `config.chunks` to identify jumbo chunks. Monitor `serverStatus().metrics.commands` for uneven query distribution.
+
+###### Follow-up Depth 4
+**Q:** What causes jumbo chunks and how do you resolve them?
+**A:** Chunks exceed `chunkSize` (default 64MB) and can't be split (e.g., all docs have same shard key). Mitigate by changing shard key (MongoDB 5.0+), manually splitting, or redesigning with a compound key.
+
+###### Follow-up Depth 5
+**Q:** How would you migrate from an unsharded to a sharded cluster with zero downtime?
+**A:** Set up new sharded cluster with replica sets, use `mongomirror` or change streams for real-time sync, switch application traffic during low-load window, verify data consistency, decommission old cluster.
+
+---
+
+### Q12: A MongoDB query takes 30 seconds despite having an index. Diagnose and optimize.
+**Answer:**
+1. Run `explain("executionStats")` to check index usage and docs examined.
+2. Verify index covers all query fields (covered query).
+3. Check for index intersection or collection scans.
+4. Analyze `totalDocsExamined` vs. `nReturned` ratio.
+5. Consider compound indexes or aggregation pipeline optimization.
+
+#### Follow-up Depth 1
+**Q:** What is a covered query and why is it faster?
+**A:** A query where all returned fields are in the index, eliminating document fetches. MongoDB reads only the index, reducing I/O.
+
+##### Follow-up Depth 2
+**Q:** The explain plan shows `IXSCAN` but still scans 1M documents to return 10. What's wrong?
+**A:** Low index selectivity or missing filter in index. The index is used but doesn't eliminate many docs. Add selective fields to the index or use compound index with better ordering.
+
+###### Follow-up Depth 3
+**Q:** How do you determine optimal index order for a compound index?
+**A:** ESR rule: **Equality** filters first, **Sort** fields next, **Range** filters last. This maximizes index pruning before range scans or sorts.
+
+###### Follow-up Depth 4
+**Q:** When would you use a partial index?
+**A:** When queries filter on a specific subset (e.g., `status: "active"`). Partial indexes are smaller, faster, and reduce write overhead by indexing only matching docs.
+
+###### Follow-up Depth 5
+**Q:** How do you monitor and prevent index bloat in MongoDB?
+**A:** Use `db.collection.stats()` to check index sizes. Run `compact` offline or rebuild indexes online (`db.collection.reIndex()` in 4.4+). Monitor with ops manager for index-to-collection size ratio.
+
+---
+
+### Q13: Explain MongoDB's replication mechanism and how you handle a split-brain scenario.
+**Answer:**
+MongoDB uses **replica sets** with primary-secondary architecture. The primary receives writes; secondaries replicate via oplog. Elections occur when primary fails, using majority voting. Split-brain is prevented via majority quorums (odd number of members, or arbiters).
+
+#### Follow-up Depth 1
+**Q:** What is the oplog and how is it sized?
+**A:** The oplog is a capped collection storing ordered write operations. Size is auto-calculated (5% of disk or 50GB) but can be manually set. Monitor oplog window to ensure replicas can catch up during outages.
+
+##### Follow-up Depth 2
+**Q:** How do you recover a secondary that has fallen behind the oplog window?
+**A:** Perform **initial sync**: secondary drops data and syncs from scratch from primary or another secondary. Alternatively, restore from backup and replay oplog.
+
+###### Follow-up Depth 3
+**Q:** What are the implications of setting read preference to `secondary`?
+**A:** Reads may be stale (eventual consistency), but offloads read traffic from primary. Tune `maxStalenessSeconds` to limit staleness. Use `secondaryPreferred` for better availability.
+
+###### Follow-up Depth 4
+**Q:** How do you ensure write safety in a replica set?
+**A:** Use `writeConcern: { w: "majority" }` to ensure writes are acknowledged by majority of nodes before success, preventing rollbacks during failover.
+
+###### Follow-up Depth 5
+**Q:** In a 5-node replica set, 3 nodes become unreachable. What happens?
+**A:** Primary steps down (can't maintain majority quorum). Cluster becomes read-only. Restore connectivity or add nodes to regain majority and elect new primary.
+
+---
+
+## 7. Database Architecture & Selection Decisions
+
+### Q14: You're designing a new microservice. How do you decide between PostgreSQL, MongoDB, and Cassandra?
+**Answer:**
+- **PostgreSQL**: ACID transactions, complex joins, relational data, strong consistency (e.g., financial systems, order management).
+- **MongoDB**: Flexible schema, rapid iteration, document-oriented data, moderate consistency (e.g., content management, catalogs).
+- **Cassandra**: High write throughput, eventual consistency, wide-column store, multi-region (e.g., time-series, IoT, analytics).
+
+#### Follow-up Depth 1
+**Q:** When would you choose MongoDB over PostgreSQL with JSONB?
+**A:** When schema evolution is frequent and unpredictable, or when horizontal scaling via sharding is needed early. PostgreSQL JSONB works well when schema is semi-structured but queries remain relational.
+
+##### Follow-up Depth 2
+**Q:** How do you handle ACID transactions in MongoDB vs. PostgreSQL?
+**A:** MongoDB supports multi-document ACID transactions (4.0+) within replica sets and sharded clusters (4.2+), but with performance overhead. PostgreSQL has mature, optimized MVCC-based transactions suitable for complex workloads.
+
+###### Follow-up Depth 3
+**Q:** What trade-offs exist when using MongoDB transactions in a sharded cluster?
+**A:** Cross-shard transactions require distributed coordination (two-phase commit), increasing latency and reducing throughput. Minimize cross-shard transactions by designing shard keys that co-locate related data.
+
+###### Follow-up Depth 4
+**Q:** When would you use Cassandra instead of MongoDB for a write-heavy workload?
+**A:** When write throughput (>>100k writes/sec) and linear scalability are critical, and eventual consistency is acceptable. Cassandra's log-structured merge-tree excels at writes; MongoDB requires careful tuning for similar scale.
+
+###### Follow-up Depth 5
+**Q:** How would you architect a system requiring both strong consistency for orders and eventual consistency for analytics?
+**A:** Use **polyglot persistence**: PostgreSQL for transactional orders with ACID guarantees, stream changes (via Debezium/CDC) to Kafka, ingest into Cassandra or ClickHouse for analytics with eventual consistency.
+
+---
+
+### Q15: Explain CAP theorem and how different databases position themselves.
+**Answer:**
+**CAP theorem** states a distributed system can provide at most two of: **Consistency** (all nodes see same data), **Availability** (every request gets a response), **Partition tolerance** (system functions despite network splits).
+
+- **CP systems** (Consistency + Partition tolerance): MongoDB (w: majority), HBase, Redis Cluster (sacrifice availability during partitions).
+- **AP systems** (Availability + Partition tolerance): Cassandra, DynamoDB, Couchbase (sacrifice consistency, eventual consistency).
+- **CA systems**: Traditional RDBMS in single-node setup (theoretical; real systems choose CP or AP).
+
+#### Follow-up Depth 1
+**Q:** How does PostgreSQL with streaming replication fit into CAP?
+**A:** Single-node is CA. With sync replication (CP) – sacrifices availability if standby is down. With async replication (AP) – eventual consistency on standby, prioritizes availability.
+
+##### Follow-up Depth 2
+**Q:** Can a database switch between CP and AP modes?
+**A:** Yes, via tunable consistency. MongoDB's `writeConcern` and `readConcern` let you choose per operation. Cassandra's `consistency level` (QUORUM vs. ONE) tunes CP vs. AP behavior.
+
+###### Follow-up Depth 3
+**Q:** What is the impact of setting MongoDB `readConcern: "linearizable"`?
+**A:** Guarantees reads reflect all acknowledged writes (strongest consistency), but adds latency (~2x) as it waits for majority acknowledgement and checks for stale reads.
+
+###### Follow-up Depth 4
+**Q:** How do you design for partition tolerance in a multi-region deployment?
+**A:** Use quorum-based replication (majority writes), deploy odd number of nodes across regions, implement conflict resolution (last-write-wins, CRDT), and monitor replication lag.
+
+###### Follow-up Depth 5
+**Q:** In a scenario where a region becomes isolated, how do you prevent split-brain?
+**A:** Use majority quorums (ensure no region can independently form quorum), deploy a tie-breaker node in a third region, and implement network health checks with automatic fencing.
+
+---
+
+### Q16: How would you implement a multi-tenant SaaS application across databases?
+**Answer:**
+Three strategies:
+1. **Database per tenant**: Strong isolation, easy backup/restore, but high overhead.
+2. **Schema per tenant**: Moderate isolation (PostgreSQL schemas), shared resources, simpler than separate DBs.
+3. **Shared schema with tenant_id**: Most efficient, requires RLS (PostgreSQL) or application-level filtering, careful indexing/partitioning.
+
+#### Follow-up Depth 1
+**Q:** When would you choose database-per-tenant over shared schema?
+**A:** When tenants have strict compliance/isolation requirements (healthcare, finance), highly variable schemas, or when tenant-specific backups and geographic placement are critical.
+
+##### Follow-up Depth 2
+**Q:** How do you handle schema migrations in a database-per-tenant model with 1000 tenants?
+**A:** Use migration orchestration tools (Flyway, Liquibase) with parallel execution, implement blue-green deployment per tenant, and rollout gradually with automated testing and rollback capability.
+
+###### Follow-up Depth 3
+**Q:** What are the performance implications of RLS in a shared schema with 10,000 tenants?
+**A:** RLS adds WHERE clause overhead. Mitigate with partitioning by `tenant_id`, ensuring indexes cover tenant_id, and caching tenant context to avoid session variable lookups.
+
+###### Follow-up Depth 4
+**Q:** How would you migrate from shared schema to database-per-tenant with zero downtime?
+**A:** Extract tenant data into new DB via dual-write or CDC, validate consistency, switch reads then writes via feature flags, monitor lag, and decommission shared schema after validation period.
+
+###### Follow-up Depth 5
+**Q:** In a hybrid model (top 10 tenants get dedicated DBs, others share), how do you route queries?
+**A:** Implement routing layer (e.g., Vitess, ProxySQL, or application middleware) that maps `tenant_id` to connection pools, with failover logic and transparent redirection during tenant tier changes.
+
+---
+
+### Q17: Scenario – Your system handles 1M writes/sec and requires sub-50ms p99 latency. Design the database layer.
+**Answer:**
+1. **Shard writes**: Use Cassandra or ScyllaDB for write-optimized architecture (LSM trees).
+2. **Partition data**: Time-series or hash-based partitioning.
+3. **SSDs with NVMe**: Low-latency storage.
+4. **Memory-optimized**: Large page cache, tune batch sizes.
+5. **CDC to read replicas**: Offload reads to PostgreSQL for complex queries.
+
+#### Follow-up Depth 1
+**Q:** Why are LSM trees better than B-trees for write-heavy workloads?
+**A:** LSM trees batch writes to memory (memtable), flush sequentially to disk (SSTables), avoiding random I/O. B-trees require in-place updates, causing random writes and higher I/O amplification.
+
+##### Follow-up Depth 2
+**Q:** What is write amplification and how does it affect SSD lifespan?
+**A:** Write amplification is the ratio of data written to SSD vs. logical writes. LSM trees have lower amplification than B-trees, reducing SSD wear. Compaction strategies (leveled, tiered) tune this trade-off.
+
+###### Follow-up Depth 3
+**Q:** How do you tune Cassandra's compaction strategy for write-heavy workloads?
+**A:** Use **Leveled Compaction** for read-heavy (lower read amplification) or **Size-Tiered** for write-heavy (lower write amplification). Monitor `pending compaction tasks` and tune `compaction_throughput_mb_per_sec`.
+
+###### Follow-up Depth 4
+**Q:** What happens to query latency during major compaction in Cassandra?
+**A:** Compaction consumes I/O and CPU, potentially increasing p99 latency. Mitigate by scheduling during off-peak, using incremental compaction, or rate-limiting compaction throughput.
+
+###### Follow-up Depth 5
+**Q:** How would you implement real-time analytics on this write-heavy stream?
+**A:** Stream writes to Kafka, use Flink/Spark Streaming for real-time aggregation, materialize results to ClickHouse or Druid for OLAP queries. Keep Cassandra for raw writes, separate analytics path via CDC.
+
+---
+
 *Use this guide to demonstrate deep database expertise, combining theoretical knowledge with practical problem-solving for senior-level interviews.*
+
