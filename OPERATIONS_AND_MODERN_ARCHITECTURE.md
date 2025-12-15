@@ -87,6 +87,144 @@ It takes weeks, but it's the only safe way."
 **Q:** How do you handle "Zombie Processes" in containers?
 **A:** "In Linux, process ID 1 (PID 1) has special responsibilities—it must 'reap' orphaned child processes (zombies). If our app starts a shell script which starts the app, the shell script might be PID 1. If it doesn't handle signals correctly, zombies pile up and eat the process table. We use `tini` or `--init` in Docker to ensure a proper init process handles signal forwarding (SIGTERM) and reaping."
 
+###### Depth 18
+**Q:** Explain "Multi-Tenancy" strategies. How do you isolate a "Platinum" customer from a free-tier user?
+**A:** "We have three models.
+1.  **Silo**: Total isolation. Separate DB, separate Servers for Platinum. Expensive, but safest.
+2.  **Pool**: Shared everything. 'TenantID' column in every table. Cheap, but 'Noisy Neighbor' risk.
+3.  **Bridge**: Shared Compute, Separate Storage.
+I use the **Pool** model for 99% of users but I enforce 'Tenant Tiering' at the API Gateway. Request comes in $\to$ Gateway checks Tier $\to$ Routes to 'Premium Queue' or 'Standard Queue'. If Standard Queue fills up, we drop traffic, but Platinum stays fast."
+
+###### Depth 19
+**Q:** How does "Sharding" actually work at the application level?
+**A:** "Sharding means splitting one big database into 10 smaller ones. The application needs a 'Router'.
+'User ID 123' comes in. The app calculates `123 % 10 = 3`. It connects to `Shard-3`.
+The tricky part is **Resharding**. If Shard-3 gets full, we can't just change the math to `% 11`. That moves *every* user. We use **Consistent Hashing** or 'Directory Based Sharding' (a lookup table) to move only a small chunk of data without downtime."
+
+###### Depth 20
+**Q:** What is "Consistent Hashing" and why do Cassandra/DynamoDB use it?
+**A:** "Imagine a circle (0-360 degrees). We place our 4 servers at 0, 90, 180, 270.
+A key hashes to '45'. We walk clockwise and store it on Server 90.
+If Server 90 dies, the keys just slide to the *next* server (180). Only 1/4th of the data moves.
+If we used `Mod 4` and changed to `Mod 3`, nearly 100% of keys would move. Consistent hashing minimizes data movement during scaling."
+
+###### Depth 21
+**Q:** Explain the "Gossip Protocol". How do 1000 nodes know who is alive?
+**A:** "They don't ping a central master (that's a bottleneck). Instead, every second, Node A picks 3 random friends and whispers: 'I am alive, and I heard Node B is alive'. This rumor spreads exponentially like a virus ($Log N$ time). Within a few seconds, everyone knows the state of the cluster. It's probabilistic but extremely scalable."
+
+###### Depth 22
+**Q:** Deep dive on "Distributed Locks" (e.g., Redis Redlock). Are they safe?
+**A:** "Honestly? No. Martin Kleppmann proved this.
+Scenario: Client A gets lock. Client A pauses (Garbage Collection) for 10s. Lock expires. Client B gets lock. Client A wakes up and writes data, overwriting Client B.
+For absolute safety, we need **Fencing Tokens**. When Redis gives a lock, it returns a number (33). Client A sends write(33). If DB sees 33 after seeing 34, it rejects. If you can't do Fencing, Redlock is 'safe enough' for efficiency, but not for correctness."
+
+###### Depth 23
+**Q:** What is "Cache Stampede" (Thundering Herd) and how do we prevent it?
+**A:** "Key 'HomePageConfig' expires at 12:00:00. At 12:00:01, 5000 requests hit the cache, miss, and *all 5000* hit the Database. The DB crashes.
+Solution 1: **Probabilistic Early Expiration**. If TTL is 60s, checking at 55s has a 10% chance to say 'I'm expired' and fetch fresh data.
+Solution 2: **Locking**. The first miss grabs a mutex 'I am fetching'. The other 4999 wait for the cache to update."
+
+###### Depth 24
+**Q:** How do "Bloom Filters" save money in Big Data systems?
+**A:** "A Bloom Filter is a tiny bit-array that answers: 'Is this item in the set?'
+It can say 'No' (100% certain) or 'Maybe' (small error margin).
+Before checking a massive Disk Table (expensive 10ms seek) for 'User-XYZ', we check the Bloom Filter (1ns RAM). If it says 'No', we skip the disk read entire. It saves 90% of I/O operations."
+
+###### Depth 25
+**Q:** Compare "Throttling" vs "Load Shedding".
+**A:** "Throttling (Rate Limiting) is 'You can only do 10 req/sec'. It's a contract enforcement.
+Load Shedding is 'I am drowning, drop everything'.
+When CPU > 90%, we strictly **Shed Load**. We return HTTP 503 immediately for low-priority traffic (Guest users, Background jobs). We don't queue them (queues eat memory). We drop them to survive."
+
+###### Depth 26
+**Q:** What is a "CRDT" (Conflict-Free Replicated Data Type)?
+**A:** "It's magic math for Google Docs.
+If I type 'A' and you type 'B' offline, how do we merge? Standard approach: Conflict.
+CRDTs are data structures that *always* merge mathematically.
+Example: 'Grow-Only Set'. You add {A}, I add {B}. Merge = Union {A, B}. It never conflicts. It allows offline-first apps."
+
+###### Depth 27
+**Q:** Why is "Clock Skew" the enemy of Distributed Systems?
+**A:** "Server A thinks it is 12:00:01. Server B thinks it is 12:00:05.
+User writes on A (Timestamp 12:00:01). User updates on B (Timestamp 12:00:05).
+Replication happens. Last Writer Wins.
+If clocks drift, an *older* write might look *newer* and overwrite data.
+We use NTP, but it's not perfect. Google Spanner uses GPS and Atomic clocks (TrueTime) to force the error margin to <ms."
+
+###### Depth 28
+**Q:** Explain "Merkle Trees" in data synchronization (like Cassandra/Dynamo).
+**A:** "How do we compare two 1TB databases to see what's different? We can't send 1TB over the wire.
+We hash the data into a Tree.
+Root Hash covers everything. If Roots match, data is identical.
+If not, go down left child. If that matches, ignore left half.
+It lets us find the *one* differing row in 1TB by only sending a few hashes."
+
+###### Depth 29
+**Q:** What is the difference between "Orchestration" and "Choreography" in Sagas?
+**A:** "Orchestration (Conductor): A central service tells everyone what to do. 'Payment, charge $5. Inventory, ship item.' Easier to debug.
+Choreography (Dancers): Payment says 'I charged $5'. Inventory hears it and acts. No boss. Harder to track 'Who failed?'."
+
+###### Depth 30
+**Q:** How do you handle "Poison Messages" in a Kafka Consumer?
+**A:** "A message that crashes the consumer code (e.g., JSON parse error). The consumer restarts, reads it again, crashes. Infinite loop.
+We must catch the exception, increment a retry count, and if > 3, move it to a **Dead Letter Queue (DLQ)**. Then commit the offset so we can move on to the next healthy message."
+
+###### Depth 31
+**Q:** Design a mechanism for "Idempotency" without a unique key from the client.
+**A:** "Hard. We can hash the request body (MD5 checksum). `Hash(User+Amount+Time)`.
+If we see the same Hash within 5 minutes, assume duplicate.
+Risk: User *intended* to pay twice quickly.
+Better to force client to send `Idempotency-Key` header."
+
+###### Depth 32
+**Q:** What is "Event Sourcing"? why use it over standard CRUD?
+**A:** "CRUD stores the *current state*: 'Balance: $100'. We lose history.
+Event Sourcing stores the *transactions*: 'Deposited $50', 'Deposited $50'.
+Balance is calculated by replaying all events.
+Pros: Perfect audit trail, Temporal Query ('What was balance last Tuesday?'), Debugging (Replay events on local machine).
+Cons: Complexity. Snapshots needed for performance."
+
+###### Depth 33
+**Q:** How does "CQRS" (Command Query Responsibility Segregation) tackle read/write asymmetry?
+**A:** "In many apps, we Read 1000x more than we Write.
+CQRS splits the models.
+**Write Model**: Normalized 3NF SQL. Optimize for consistency.
+**Read Model**: Denormalized NoSQL (Elastic/Mongo). Pre-joined data.
+The Write Service publishes events. The Read Service consumes them and updates the NoSQL view.
+Reads are super fast, but potentially stale."
+
+###### Depth 34
+**Q:** What is "API Gateway Aggregation"?
+**A:** "Mobile client needs User Profile + Last Orders + Account Balance.
+Instead of Mobile making 3 slow 4G calls, it calls Gateway `/dashboard`.
+Gateway makes 3 fast internal calls (parallel), merges JSON, and returns 1 packet.
+Reduces network round-trips and saves Mobile battery."
+
+###### Depth 35
+**Q:** Explain "Polyglot Persistence".
+**A:** "Don't force everything into Oracle.
+Use Redis for Session Cache (Speed).
+Use Postgres for Financials (ACID).
+Use ElasticSearch for Search (Text).
+Use Cassandra for Logs (Write throughput).
+Use the right tool for the job, but pay the 'Operational Tax' of managing 4 DB technologies."
+
+###### Depth 36
+**Q:** How do we secure "Service-to-Service" communication? (Zero Trust).
+**A:** "mTLS (Mutual TLS).
+Client presents a Certificate. Server presents a Certificate.
+Both verify the other is signed by the internal CA.
+It encrypts traffic AND authenticates identity.
+Tools like Istio/Linkerd do this automatically via sidecars so code doesn't change."
+
+###### Depth 37
+**Q:** What is "Chaos Engineering" beyond just killing servers?
+**A:** "Simian Army (Netflix).
+**Latency Monkey**: Adds 500ms delay to API calls. (Tests Timeouts).
+**Memory Monkey**: Eats RAM. (Tests OOM handling).
+**Certificate Monkey**: Expires SSL certs. (Tests rotation).
+We inject constraints to verify the system degrades gracefully, rather than collapsing."
+
 ---
 
 ## 2. Operations, Monitoring & Incident Management
@@ -199,6 +337,141 @@ Operationally, deciding this *during* an incident is impossible. It must be a pr
 ###### Depth 17
 **Q:** How do you benchmark a system's "Capacity" before a marketing launch?
 **A:** "Load Testing is usually wrong because it tests the 'Happy Path'. I do **Stress Testing**. I ramp up traffic until the system breaks. I want to know the *Point of Failure*. Is it 10k RPS? 50k? And *how* does it fail? Does it slow down gracefully, or crash hard? I verify that Auto-Scaling triggers *before* the crash point (accounting for spin-up latency)."
+
+###### Depth 18
+**Q:** Explain **eBPF** (Extended Berkeley Packet Filter). Why is everyone talking about it?
+**A:** "It's a superpower. It lets us run sandboxed programs inside the Linux Kernel *without* recompiling the kernel.
+We can trace any function call, network packet, or disk write with near-zero overhead.
+New Relic/Datadog use it to see HTTPS traffic (by hooking the SSL library) or measure exact disk latency without instrumenting the application code."
+
+###### Depth 19
+**Q:** How do Linux "Cgroups" (Control Groups) actually work?
+**A:** "Cgroups limit *how much* resource a process can use.
+`cpu.shares`: Relative weight. If system is idle, I get 100%. If busy, I get my share.
+`cpu.cfs_quota_us`: Hard limit. If I set 0.5 CPU, and I try to use 0.6, the Kernel **throttles** me (pauses my threads) for the rest of the 100ms period. This causes 'Micro-stuttering' in Java apps."
+
+###### Depth 20
+**Q:** What is "OOM Killer" score and how do we influence it?
+**A:** "When Linux runs out of RAM, it must kill something to survive.
+It calculates `oom_score` based on RAM usage. Bad processes get high scores.
+We can adjust `/proc/PID/oom_score_adj`.
+we set Kubernetes 'Critical Pods' (like DaemonSets) to `-999` so the Kernel *never* kills them. It kills the bloated Java app first."
+
+###### Depth 21
+**Q:** Explain "Swappiness". Should we disable Swap on Kubernetes nodes?
+**A:** "Traditionally, yes. `swapoff -a`.
+If an app starts swapping to disk, it slows down 10,000x. In a cluster, we prefer the app to **Crash & Restart** (on a healthy node) rather than run slowly (Zombie).
+Simplicity: Disable swap. Force the issue."
+
+###### Depth 22
+**Q:** What are "HugePages" and why do Databases love them?
+**A:** "Normal RAM page is 4KB. To map 64GB RAM, CPU needs a huge TLB (Translation Lookaside Buffer) table.
+HugePages are 2MB or 1GB.
+Fewer pages = Smaller TLB = Fewer CPU cache misses.
+Postgres/Oracle/Java see significant perf boost (10-15%) with HugePages enabled."
+
+###### Depth 23
+**Q:** Explain "NUMA" (Non-Uniform Memory Access) impact on performance.
+**A:** "Modern servers have 2 CPUs (Sockets). RAM is split. Half attached to CPU 1, Half to CPU 2.
+If CPU 1 accesses CPU 2's RAM, it must go over the 'QPI Link' (a bridge). It's slower.
+We use `numactl` to pin our Database process to Socket 0 and only use Socket 0 RAM (Local access). It reduces latency tail."
+
+###### Depth 24
+**Q:** Compare Disk Schedulers: **BFQ** vs **Kyber** vs **None**.
+**A:** "Kernel decides order of disk writes.
+*   **HDD**: Needs sorting to minimize headseek.
+*   **NVMe SSD**: Has no moving parts. Sorting is waste of CPU.
+For Cloud/SSD, we set scheduler to **`none`** or `kyber`. We let the hardware handle it. Double scheduling (Kernel + Hypervisor) adds latency."
+
+###### Depth 25
+**Q:** What is a "Soft Limit" vs "Hard Limit" for File Descriptors (`ulimit -n`)?
+**A:** "Soft Limit: The default warning level. User can raise it themselves up to Hard Limit.
+Hard Limit: Absolute ceiling set by Root.
+Production Issue: Default is often 1024. Web Servers need 100,000. App crashes with `Too Many Open Files`. We must bump both in `/etc/security/limits.conf`."
+
+###### Depth 26
+**Q:** Analyze **TCP Congestion Control**: Cubic vs BBR.
+**A:** "TCP tries to guess how fast it can send.
+*   **Cubic**: Slows down when packet loss happens. (Bad for wifi/lossy networks).
+*   **BBR** (Google): Models the *bandwidth* and *RTT*. Ignores random packet loss. Pushes data much faster.
+Switching on BBR (`net.ipv4.tcp_congestion_control = bbr`) can improve throughput 30% on global internet traffic."
+
+###### Depth 27
+**Q:** Why do we see huge `TIME_WAIT` sockets on our Load Balancer?
+**A:** "TCP connection doesn't die instantly. It stays in `TIME_WAIT` for 60s to catch delayed packets.
+High traffic opens thousands of short connections. We run out of 65k ports.
+Fix: Enable `net.ipv4.tcp_tw_reuse = 1`. Allows Kernel to reuse these safe slots immediately."
+
+###### Depth 28
+**Q:** How does "DNS Caching" work in Linux? (Trick question).
+**A:** "It doesn't. Linux kernel has **no** DNS cache.
+Glibc does the distinct lookup every time.
+We must install `nscd` or `systemd-resolved` or use a local `dnsmasq` if we want OS-level caching.
+Java has its own internal DNS cache (`networkaddress.cache.ttl`) which defaults to 'Forever' in security manager, causing Failover issues."
+
+###### Depth 29
+**Q:** Explain "NTP Drift". Slew vs Step?
+**A:** "Clock is off by 500ms.
+**Step**: Jump the clock. 12:00:00 $\to$ 12:00:01. Dangerous. Logs skip. Jobs miss schedules.
+**Slew**: Slow down the seconds. A second becomes 1.1ms until matched. Safer.
+Always configure NTP to Slew (drift) for small corrections."
+
+###### Depth 30
+**Q:** Why not use RAID-5 in the Cloud (EBS)?
+**A:** "EBS is *already* replicated network storage.
+Building RAID-5 on top of network volumes is terrible.
+Write penalty: Every write requires reading parity, calculating, writing parity.
+Latency is $2\times$.
+If you need speed, use RAID-0 (Striping) for IOPS sum. If you need safety, trust AWS or take Snapshots."
+
+###### Depth 31
+**Q:** Block Storage (EBS) vs Object Storage (S3) latency comparison.
+**A:** "EBS is a hard drive over a wire. Latency ~1-2ms. Good for Databases.
+S3 is a Web API (HTTP). Latency ~50-100ms. Good for Blobs.
+Never try to run a Database on S3 (via FUSE mount). The latency variance (Jitter) will kill any locking mechanism."
+
+###### Depth 32
+**Q:** Explain "IOPS" vs "Throughput". Can I have high IOPS but low Throughput?
+**A:** "**IOPS**: How many checks per second. (Small interactions).
+**Throughput**: How much water in the pipe. (MB/s).
+Yes. 4KB writes at 10,000 IOPS = 40MB/s (Low throughput).
+1MB writes at 100 IOPS = 100MB/s (High throughput).
+Databases need IOPS. Video streaming needs Throughput."
+
+###### Depth 33
+**Q:** What happens when you run out of **Inodes**?
+**A:** "Disk shows 50% free space (`df -h`). But write fails: `No space left on device`.
+Check `df -i`.
+If you have millions of 0-byte files (cache markers, session files), you eat the Inode table.
+The filesystem has slots for file metadata. Once full, you can't create files, even if PB space is free."
+
+###### Depth 34
+**Q:** How does "Log Rotation" `copytruncate` verify?
+**A:** "App writes to `app.log`.
+Rotation needs to gzip it.
+`rename`: Rename `app.log` $\to$ `app.log.1`. App process keeps writing to the *file handle* (which is now `app.log.1`). Result: Logs go to archived file. New `app.log` stays empty. App must be restarted (SIGHUP).
+`copytruncate`: Copy content to archive. Truncate `app.log` to zero. No restart needed. **Risk**: We lose logs written during the copy-paste microseconds."
+
+###### Depth 35
+**Q:** What is the difference between `SIGTERM` and `SIGKILL`?
+**A:** "`SIGTERM` (15): Polite knock. 'Please clean up and exit'. App catches it, finishes request, closes DB connection.
+`SIGKILL` (9): Police raid. Kernel rips process from CPU immediately. No cleanup. Corruption possible.
+We always wait 30s after SIGTERM before sending SIGKILL (Kubernetes default)."
+
+###### Depth 36
+**Q:** Explain "SoftIRQs" (Software Interrupts) and how they bottleneck networking.
+**A:** "NIC receives packet $\to$ Hardware Interrupt $\to$ CPU stops $\to$ softirq handles packet processing.
+If one CPU core handles ALL interrupts (Core 0), it hits 100% `si` usage while other cores sleep.
+Network lags.
+Fix: **RPS (Receive Packet Steering)**. Distribute remote interrupts across all cores."
+
+###### Depth 37
+**Q:** How do you debug a "Hung System" where you can't even SSH?
+**A:** "Console Access (Out of Band).
+If totally frozen, **Magic SysRq Key**.
+`Alt + SysRq + R-E-I-S-U-B`.
+(Raw keyboard, Terminate, Kill, Sync disks, Unmount, Reboot).
+It talks directly to the kernel, bypassing the frozen userspace/UI. It allows a clean reboot instead of power pulling."
 
 ---
 
