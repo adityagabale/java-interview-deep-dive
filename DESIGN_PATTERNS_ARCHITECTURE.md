@@ -77,6 +77,46 @@ Deploy a distributed API Gateway (Kong/Envoy) at the edge.
 **Q:** Design a strategy for "API Schema Evolution" with zero breaking changes for 5 years.
 **A:** deeply additive changes only. Use specific "Evolutionary Architecture" patterns: Field deprecation headers (`Deprecation: true`), "Expand Contract" pattern (support old and new fields simultaneously), and extensive Consumer-Driven Contract (CDC) testing.
 
+###### Depth 18
+**Q:** How does **eBPF** (Extended Berkeley Packet Filter) revolutionize API Gateway observability and security?
+**A:** Runs sandboxed programs in kernel space. Used for zero-overhead profiling (CPU/Memory), deep packet inspection without context switching to user space, and enforcing L7 security policies (Cilium) at the socket layer.
+
+###### Depth 19
+**Q:** Explain "TCP Head-of-Line Blocking" mathematically and how QUIC solves it.
+**A:** In TCP, packet loss at sequence $N$ blocks delivery of $N+1$, even if $N+1$ arrived. QUIC uses UDP streams; stream $A$ packet loss doesn't block stream $B$. Delay model shifts from $P(loss) \times RTT$ to per-stream loss probability.
+
+###### Depth 20
+**Q:** Design a "Geo-DNS" based traffic steering mechanism for active-active multi-region API Gateways.
+**A:** Authorization needs global convergence. Use "Route 53 Latency Routing". If Region A fails, health checks flip DNS. But DNS TTL causes downtime (minutes). Solution: Anycast IP, announces same IP from multiple POPs, BGP handles failover (<10s).
+
+###### Depth 21
+**Q:** What is the "Coordination Avoidance" theorem in API design?
+**A:** Peter Bailis et al. "Invariant Confluence". If a system invariant (e.g., negative balance check) does not require coordination, it can be scalable. If it does (e.g., unique ID), it faces scalability limits. Design APIs to minimize invariants.
+
+###### Depth 22
+**Q:** How do you optimize "TLS Handshake" for mobile networks (high latency)?
+**A:** Use TLS 1.3 (1-RTT). Enable "Session Resumption" (0-RTT) using session tickets. Use generic ECC keys (smaller size). Terminate TLS at Edge POPs closer to user, keep backend connection warm (connection pooling).
+
+###### Depth 23
+**Q:** Explain the "C10K Problem" vs "C10M Problem" in Gateway scaling.
+**A:** C10K (10k conns) solved by epoll/kqueue (O(1) polling). C10M (10M conns) limitations are kernel locks, interrupt handling, and cache misses. Solution: User-space networking (DPDK), bypassing kernel TCP stack entirely, pinning threads to cores (NUMA awareness).
+
+###### Depth 24
+**Q:** How does "Flow Control" in HTTP/2 interaction with TCP Flow Control cause "Buffer Bloat"?
+**A:** If HTTP/2 window > TCP window, app sends data, TCP buffers it. If packet loss, huge buffer needs retransmission. Fix: BBR Congestion Control Algorithm (Google) which models bandwidth and RTT separately to draining buffers.
+
+###### Depth 25
+**Q:** Design a "Token Bucket" rate limiter that is mathematically robust against clock skew in distributed clusters.
+**A:** Use "GCRA" (Generic Cell Rate Algorithm) - a leaky bucket variant. Stores "Theoretical Arrival Time" (TAT) instead of token count. If $Now < TAT$, reject. Skew only affects burst duration, not rate.
+
+###### Depth 26
+**Q:** How do you mitigate "Side Channel Attacks" (Timing Attacks) in API Authentication?
+**A:** `String.equals(a, b)` returns fast on first char mismatch. Attackers guess chars based on time. Use `MessageDigest.isEqual()` (constant time comparison) for API keys/HMAC verifications.
+
+###### Depth 27
+**Q:** Explore "Formal Verification" of API Security Policies (e.g., OPA).
+**A:** Use logic programming (Rego/Datalog). Verify policy invariants (e.g., "Admin can always access") using SMT solvers (Z3). Prove that no combination of inputs permits unauthorized access.
+
 ---
 
 ## 2. Event-Driven & Messaging Architecture
@@ -230,6 +270,54 @@ Use **Apache Spark** on ephemeral clusters (EMR/Databricks).
 **Q:** How do you enable "Z-Ordering" or "Space-Filling Curves" for multi-dimensional clustering?
 **A:** Physically co-locates data points close in N-dimensions (e.g., time AND region) into the same file. Drastically improves "Data Skipping" for queries filtering on multiple columns effectively.
 
+###### Depth 16
+**Q:** Compare "Bloom Filters" vs "Cuckoo Filters" for Set Membership in Big Data Joins.
+**A:** Bloom: Fast, probabilistic, 30% smaller than set. Cuckoo: Supports **deletions**, higher performance (cache locality), better space efficiency at low false-positive rates. Used in advanced query optimizers to skip join checks.
+
+###### Depth 17
+**Q:** How does "Tungsten Project" in Spark optimize memory layout off-heap?
+**A:** Uses `sun.misc.Unsafe` to manage memory manually (outside JVM GC). Encodes data in compact binary format (no object overhead). Eliminates GC pauses for large datasets. Improves cache locality.
+
+###### Depth 18
+**Q:** What is the "Small File Problem" impact on HDFS NameNode memory?
+**A:** NameNode stores file metadata in RAM (~150 bytes/object). 1 billion small files = 150GB RAM usage which causes GC instability. Federation or Ozone separates storage from namespace.
+
+###### Depth 19
+**Q:** Explain "External Shuffle Service" benefits in Dynamic Allocation.
+**A:** Allows Executors to die (scale down) without losing their shuffle files (map outputs). Shuffle data is served by a separate daemon on the worker node. Required for aggressive autoscaling.
+
+###### Depth 20
+**Q:** Explain the mathematical concept of "HyperLogLog" (HLL) for distinct count.
+**A:** Probabilistic cardinality estimation. Hashes elements, counts leading zeros. $Count \approx 2^{max\_zeros}$. Accuracy $\approx 1.04/\sqrt{m}$. 2% error with 1.5KB memory vs GBs for HashSets.
+
+###### Depth 21
+**Q:** How do you handle "Schema Evolution" in Parquet (Protobuf/Thrift) efficiently?
+**A:** Additive fields only. Parquet stores schema in footer. Reader must perform "Schema Merging" (read footer of all files, union schemas). Expensive at read time. Delta Lake Transaction Log stores the canonical schema to avoid file opens.
+
+###### Depth 22
+**Q:** Optimize a Sort-Merge Join that spills to disk (OOM).
+**A:** Increase `spark.sql.shuffle.partitions`. Increase `spark.memory.fraction`. Use SSDs for spill disks. Or, switch to "Bucket Join" (pre-shuffle data by key during write) to eliminate shuffle phase entirely at read time.
+
+###### Depth 23
+**Q:** Deep dive: How does "Erasure Coding" (Reed-Solomon) save storage vs Replication (3x)?
+**A:** Splits file into $N$ data blocks + $K$ parity blocks. Can recover from $K$ failures. Storage overhead $1 + K/N$ (e.g., 1.5x) vs 3x. CPU intensive to reconstruct. Good for cold data.
+
+###### Depth 24
+**Q:** How does **GPU Acceleration** (Rapids) speed up Shuffle?
+**A:** Uses RDMA (Remote Direct Memory Access) over GPUDirect. Transfers data from GPU memory of Node A to GPU memory of Node B bypassing CPU and System RAM.
+
+###### Depth 25
+**Q:** Design a mechanism to detect and handle "Silent Data Corruption" (Bit Rot) in 100TB.
+**A:** Background scrubbing. Calculate checksums (CRC32) at block level. Store checksums separate from data. Verify on every read. If mismatch, rebuild from parity/replica.
+
+###### Depth 26
+**Q:** Formal Proof: Why is "Exactly-Once" impossible in general distributed stream processing?
+**A:** Fischer-Lynch-Paterson (FLP) impossibility. You cannot distinguish a crashed node from a slow one. "Exactly-once" effectively means "Effectively-once" via checkpoints + idempotent sinks.
+
+###### Depth 27
+**Q:** How to optimize "Shuffle" for 100Gbps networks?
+**A:** Use Netty's Zero-Copy transfer. Tune `spark.shuffle.io.numConnectionsPerPeer`. Use "RoCE" (RDMA over Converged Ethernet) to offload transport to NIC.
+
 ---
 
 ## 4. Distributed Systems Primitives
@@ -299,6 +387,54 @@ Service discovery allows services to find dynamic IP/Ports.
 ###### Depth 15
 **Q:** Explore the "Jepsen Test" methodology for database verification.
 **A:** A framework to verify distributed system claims. Injects network partitions, clock skew, process pauses, and checks if linearizability or ACID guarantees hold. Often finds bugs in "Strong Consistency" claims.
+
+###### Depth 16
+**Q:** What is "Linearizability" vs "Serializability"?
+**A:** **Linearizability**: Real-time guarantee for a single object. Read returns latest write (System looks like one copy). **Serializability**: Transaction isolation property. Transactions execute as if sequential. "Strict Serializability" = both.
+
+###### Depth 17
+**Q:** Explain the **Paxos** algorithm (Basic Paxos) in simple terms.
+**A:** 2-Phase Protocol. Phase 1 (Prepare): Proposer asks majority "Promise not to accept proposals < N". Phase 2 (Accept): If promise from majority, send "Accept value V". If majority accepts, Value chosen. Safe against asynchronous networks.
+
+###### Depth 18
+**Q:** Compare **Raft** vs **Multi-Paxos** for log replication.
+**A:** Logically equivalent. Raft is designed for understandability. Enforces Strong Leader constraints (only log with all committed entries can be leader). Multi-Paxos allows more complex log hole filling (out of order commit) but harder to implement.
+
+###### Depth 19
+**Q:** How do you implement "Distributed Rate Limiting" using **Consistent Hashing**?
+**A:** Hash `UserID` to a ring. Map user to specific Redis instance. Counts are local to that instance. Avoids global synchronized variable. Resharding only moves $1/N$ keys.
+
+###### Depth 20
+**Q:** Deep dive: **Bloom Clock** or **Interval Tree Clocks** for dynamic systems.
+**A:** Vector clocks require fixed N nodes. Interval Tree Clocks support dynamic nodes joining/leaving. Used in decentralized DBs (Riak) to track causality without central registry.
+
+###### Depth 21
+**Q:** Explain the "CALM Theorem" (Consistency as Logical Monotonicity).
+**A:** A distributed program has a coordination-free implementation **if and only if** it is monotonic (outputs only grow over time, never retract). Suggests designing systems that don't need destructive updates/retractions.
+
+###### Depth 22
+**Q:** How does **Google Spanner** achieve External Consistency?
+**A:** TrueTime API. Uncertainty interval $\epsilon$. Wait out the uncertainty $\epsilon$ before commit. Ensures if $Tx1$ finishes before $Tx2$ starts in real time, $Timestamp(Tx1) < Timestamp(Tx2)$ globally.
+
+###### Depth 23
+**Q:** Design a system robust to **Network Partitions** without sacrificing **Consistency** (CP) or **Availability** (AP)?
+**A:** **Slope (PACELC)**. You can't. But you can use "Conflict-free" types (AP) for low-value ops (likes) and "Consensus" (CP) for high-value (money). Hybrid systems (CosmosDB "Session" consistency).
+
+###### Depth 24
+**Q:** How to prove correctness of Distributed Algorithms?
+**A:** **TLA+** (Temporal Logic of Actions). Formal specification language. Model check every possible state transition. Used by AWS to verify DynamoDB and S3 consistency protocols.
+
+###### Depth 25
+**Q:** What is **Phi Accrual Failure Detector**?
+**A:** Instead of binary "Up/Down", output a probability $P$ that node is down based on recent heartbeat arrival distribution. allows application to set threshold $\phi$ for trade-off between false positives and detection speed.
+
+###### Depth 26
+**Q:** Explain "Wait-Free" synchronization hierarchy.
+**A:** Classification of atomic objects: Register ($1$), Consensus ($\infty$). Impossible to implement Consensus using only Registers in async system (Herlihy). You need CAS (Compare-And-Swap) or RMW instructions.
+
+###### Depth 27
+**Q:** Design a **Determinstic Database** (Calvin/Fauna).
+**A:** Pre-sequence all transactions (Consensus on input log). Execute deterministically on all replicas. No need for 2PC commit logic. Eliminates distributed lock contention. Scalable ACID.
 
 ---
 
