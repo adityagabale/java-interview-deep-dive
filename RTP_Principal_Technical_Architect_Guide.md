@@ -45,6 +45,10 @@ Keep this framing in mind: every technical question is secretly a question about
 
 ### 3. Architecture Foundations (But for Principal Level)
 
+> [!TIP]
+> **Deep Dive Available**: We have created a dedicated, deeply detailed guide on **SOLID Principles and Design Patterns (10 Levels of Depth)**. It covers everything from basic code examples to distributed system implications.
+> 👉 **Read it here:** [SOLID_AND_PATTERNS_DEEP_DIVE.md](file:///Users/adityagabale/Antigravity-WS/Test/SOLID_AND_PATTERNS_DEEP_DIVE.md)
+
 You’ll absolutely get some “simple” questions but they are checking for **depth**:
 
 - **“Monolith vs microservices – which would you use and why?”**
