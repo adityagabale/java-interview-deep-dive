@@ -1094,11 +1094,51 @@ In App Servers (Tomcat), threads are reused (Thread Pool).
 *   `SELECT * FROM users WHERE name = ?`.
 *   The DB engine treats the input strictly as data, never as executable code.
 
-### Scenario 29: The Dependency Hell (Jar Conflict)
-**The Problem:** Service needs `Library A (v1.0)` and `Library B`. But `Library B` depends on `Library A (v2.0)`. Classpath crash (`NoSuchMethodError`).
-**The Principal Solution:** **Shading (Shadowing) or Microservices.**
-*   *Shading:* Build tools (Maven Shade Plugin) rename the internal packages of dependencies so `v1` and `v2` can coexist.
-*   *Opionated:* If it's too hard, split the service. Isolation is a benefit of microservices.
+### Scenario 29: The Dependency Hell (The "Guava Version" Conflict)
+**The Real-World Nightmare:**
+*   **Your App** is a Data Processing Service.
+*   **Library A (Legacy):** You use `hadoop-client` to talk to HDFS. Hadoop notoriously bundles an **ancient version of Google Guava (v11.0)**.
+*   **Library B (Modern):** You also use `google-cloud-storage` SDK to upload reports. It requires a **modern Guava (v31.0)**.
+*   **The Crash:**
+    ```text
+    java.lang.NoSuchMethodError: com.google.common.base.Stopwatch.createStarted()
+    at com.google.cloud.storage...
+    ```
+*   **Why?** Maven sees Guava v11 and v31. It picks v11 (because Hadoop is "closer" in the tree). The Cloud SDK calls `createStarted()`, which *didn't exist* in v11. The JVM crashes.
+
+**The Naive Solution:** `<exclusion>` on Hadoop's Guava?
+*   *Fail:* If you force v31, Hadoop crashes because v31 *removed* methods that Hadoop uses. You are trapped.
+
+**The Principal Solution:** **Class Relocation (Shading).**
+*   **Tool:** `maven-shade-plugin`.
+*   **Strategy:** Create a module specifically to wrap the Cloud SDK. Shade its Guava dependency.
+*   **Configuration:**
+    *   Rename `com.google.common` -> `shaded.google.common` *inside the Cloud SDK jar*.
+*   **Result:**
+    *   Hadoop uses `com.google.common` (v11).
+    *   Cloud SDK uses `shaded.google.common` (v31).
+    *   Peace is restored.
+
+**Maven Config:**
+```xml
+<relocations>
+    <relocation>
+        <pattern>com.google.common</pattern>
+        <shadedPattern>my.shaded.guava</shadedPattern>
+    </relocation>
+</relocations>
+```
+
+**Alternative Example: The "Logging Hell" (SLF4J StackOverflow)**
+*   **The Conflict:** You include `spring-boot-starter-web` (uses Logback) and `legacy-lib` (uses Log4j).
+*   **The Trap:** You mistakenly add `log4j-over-slf4j` AND `slf4j-log4j12` on the classpath.
+*   **The Crash:**
+    1.  App calls `Log4j`.
+    2.  `log4j-over-slf4j` redirects it to `SLF4J`.
+    3.  `SLF4J` binds to `slf4j-log4j12`.
+    4.  `slf4j-log4j12` redirects it back to `Log4j`.
+    5.  **Infinite Loop** -> `StackOverflowError`.
+*   **The Fix:** Use `mvn dependency:tree` to find and `<exclude>` the bridge jars causing the cycle.
 
 ### Scenario 30: The Auto-Scaling Lag
 **The Problem:** Traffic spikes. CPU hits 90%. Auto-scaler waits 5 minutes to boot new EC2 instances. By then, the server has crashed.
