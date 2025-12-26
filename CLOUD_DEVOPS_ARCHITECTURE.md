@@ -1,10 +1,119 @@
 # Cloud and DevOps Architecture - Deep Dive Interview Guide
 ## IC 16+ Level Technical Interview
 
+
 This guide covers Kubernetes, Docker, Chef, Azure, AWS with real-world scenarios, troubleshooting, and architectural depth.
+
+### How to read this guide (what interviewers look for)
+For every answer, explicitly cover:
+1) **Decision** (what you choose)
+2) **Signals** (metrics/alerts/symptoms you use)
+3) **Trade-offs** (what you give up)
+4) **Failure modes** (what can go wrong and how you detect it)
+
+### Standard Answer Frame (use this mentally in every answer)
+- **Decision**: What I choose and why (one clear architectural call)
+- **Signals**: What I watch to validate or invalidate that decision (metrics, logs, alerts)
+- **Trade-offs**: What I knowingly give up (cost, latency, complexity, lock-in)
+- **Failure modes**: How this can fail in reality and how I detect/contain it
+
+Interview tip: Even if not stated explicitly, structure your verbal answer in this order.
+
+Legend used below:
+- **✅ Strong signals**: what a Principal/Staff interviewer expects to hear
+- **⚠️ Pitfalls**: common incomplete/incorrect statements
 
 ---
 
+## 2A. Supply Chain Security (Container + CI/CD)
+
+### Q2A.1: How do you secure your container supply chain from build through deployment?
+
+**Answer:**
+**Decision:** Adopt a defense-in-depth supply chain security model using signed images, SBOMs, deploy-by-digest, and automated verification at every stage (CI, registry, deploy).
+
+**Signals:**
+- All production images are signed (cosign, Notary v2) and verified before deploy.
+- SBOMs (CycloneDX/SPDX) are generated and stored with images.
+- CI pipeline attestation (SLSA provenance) is enforced.
+- Admission controller blocks unsigned/unverified images.
+- Deployments reference immutable digests, not tags.
+
+**Trade-offs:**
+- Increased build and deployment complexity, especially for legacy images.
+- Slightly slower pipeline due to signature and SBOM generation/verification.
+- Requires developer education and registry support for signatures.
+
+**Failure modes:**
+- Unsigned/unverified images slip through due to misconfigured policy.
+- Outdated or incomplete SBOMs; drift between SBOM and actual layers.
+- Compromised build agent can inject malware before signing.
+- Digest pinning can break automated rollouts if upstream images are rebuilt/replaced.
+
+**Key Practices:**
+1. **Image Signing:** Use cosign to sign images post-build:
+   ```bash
+   cosign sign --key cosign.key myregistry.io/myapp@sha256:...
+   ```
+   - Store public key in cluster or use keyless signing via OIDC.
+2. **SBOM Generation:** Generate SBOM in CI (Syft, Trivy):
+   ```bash
+   syft packages docker:myapp:latest -o cyclonedx-json > sbom.json
+   ```
+3. **Cosign Verification in CI/CD:** Enforce signature verification before deployment:
+   ```bash
+   cosign verify --key cosign.pub myregistry.io/myapp@sha256:...
+   ```
+4. **Deploy-by-Digest:** Reference images by digest in manifests:
+   ```yaml
+   image: myregistry.io/myapp@sha256:abcdef123456...
+   ```
+5. **Admission Control:** Use OPA Gatekeeper/Kyverno to enforce signature/SBOM policy:
+   ```yaml
+   apiVersion: kyverno.io/v1
+   kind: ClusterPolicy
+   metadata:
+     name: require-image-signature
+   spec:
+     validationFailureAction: enforce
+     rules:
+     - name: verify-cosign
+       match:
+         resources:
+           kinds: ["Pod"]
+       verifyImages:
+       - image: "myregistry.io/*"
+         key: "k8s://cosign-pub"
+         attestors:
+         - entries:
+           - keyless:
+               subject: "dev@company.com"
+   ```
+6. **SLSA Provenance:** Require SLSA Level 2/3 provenance for critical images.
+7. **Registry/Build Pipeline:** Use registries supporting OCI signatures (ECR, ACR, GCR) and hardened build runners.
+
+**Signals (for Principal-level):**
+- All production deployments reference digests, not tags.
+- CI/CD attestation is visible in registry metadata.
+- Admission controller metrics show 0 unsigned image admits.
+- Alert on failed verification or unsigned image push.
+
+**Trade-offs:**
+- More friction for rapid prototyping (can be mitigated with dev exceptions).
+- Digest pinning may break if base images are force-pushed.
+- SLSA provenance requires build system integration.
+
+**Failure modes:**
+- Registry compromise (mitigated by signature verification).
+- Key management errors (lost or leaked signing keys).
+- Policy bypass (e.g., privileged users disabling admission controller).
+
+**Signals/Trade-offs/Failure-modes Blocks:**
+> **Signals:** Percent of images deployed with valid signatures/SBOM; admission controller block rate; SLSA provenance coverage; failed verification events.
+> **Trade-offs:** Pipeline speed, developer experience, key management complexity, digest pinning maintenance.
+> **Failure modes:** Build agent compromise, key leakage, policy misconfiguration, registry attacks, SBOM drift.
+
+---
 ## 1. Kubernetes Architecture & Implementation
 
 ### Q1.1: Setting Up Production-Grade Kubernetes Cluster
@@ -36,7 +145,7 @@ etcd:
     - https://10.0.1.12:2379
 apiServer:
   extraArgs:
-    enable-admission-plugins: NodeRestriction,PodSecurityPolicy,ResourceQuota
+    enable-admission-plugins: NodeRestriction,PodSecurity,ResourceQuota
     audit-log-path: /var/log/kube-apiserver-audit.log
     audit-log-maxage: "30"
 ```
@@ -46,7 +155,15 @@ apiServer:
 2. **Resource Quotas**: CPU/Memory limits per namespace
 3. **Network Policies**: Strict ingress/egress rules
 4. **RBAC**: Role-based access with service accounts
-5. **Pod Security Policies**: Enforce security standards
+5. **Pod Security Admission (PSA)**: Enforce baseline/restricted pod security standards (PSP is deprecated)
+
+✅ Strong signals:
+- You separate **tenancy** (RBAC/namespace/network) from **blast radius** (separate clusters for high-risk domains).
+- You mention **Pod Security Admission (baseline/restricted)** and a policy engine (OPA/Gatekeeper or Kyverno) for org controls.
+
+⚠️ Pitfalls:
+- Saying “namespaces are enough” for strict isolation (they are not for hostile tenants).
+- Using deprecated PSP (PodSecurityPolicy).
 
 **Follow-up Depth 1:** How do you handle cluster upgrades without downtime?
 - **Answer**: Blue-green cluster strategy or rolling node upgrades
@@ -80,6 +197,93 @@ apiServer:
 
 ---
 
+## 3A. API Resilience Patterns (Rate Limiting, Backpressure, Idempotency)
+
+### Q3A.1: How do you design resilient APIs for payments/money movement to handle spikes, retries, and fairness?
+
+**Answer:**
+**Decision:** Implement multi-layer rate limiting (WAF, API Gateway, app level), idempotency keys, and backpressure protection using distributed counters (e.g., Redis) and fairness-aware algorithms.
+
+**Signals:**
+- 429/503 rate of responses at each layer (WAF/APIGW/app).
+- Redis/DB counter saturation or latency.
+- Idempotency key collision rate.
+- Retry storm detection (spike in identical requests).
+- Per-region fairness signals (e.g., no single region starves others).
+
+**Trade-offs:**
+- Some legitimate requests may be throttled under burst.
+- Additional infrastructure (Redis, API Gateway config).
+- Complexity in handling distributed counters and idempotency tracking.
+- Slightly higher latency for idempotency key checks.
+
+**Failure modes:**
+- Rate limiter misconfiguration blocks all traffic or allows abuse.
+- Hot key in Redis causes unfair throttling ("key skew").
+- Idempotency key collision leads to double processing or missed updates.
+- Retry storms amplify outages (thundering herd).
+
+**Deep Dive:**
+**1. Multi-layer Rate Limiting:**
+   - **WAF:** Basic IP-based limits, blocks abuse early.
+   - **API Gateway:** Per-API key or per-customer limits, token bucket or leaky bucket algorithm.
+   - **App Layer:** Fine-grained (per-user, per-account) limits using Redis atomic counters.
+   - Example (AWS API Gateway):
+     ```yaml
+     throttle:
+       burstLimit: 200
+       rateLimit: 100
+     ```
+**2. Token Bucket vs Leaky Bucket:**
+   - **Token Bucket:** Allows bursts up to bucket size; tokens refill at steady rate. Good for real-world APIs needing burst tolerance.
+   - **Leaky Bucket:** Smooths out bursts, enforces steady rate. Good for strict fairness but can cause higher latency under burst.
+**3. Backpressure/Retry Storms:**
+   - Detect surge in 429s or increased queue depth.
+   - Use exponential backoff with jitter on client retries.
+   - Circuit breaker at app layer to shed load.
+**4. Idempotency Keys:**
+   - Require clients to send an idempotency key (UUID) per logical operation (e.g., payment).
+   - Store key and result in Redis or DB; on duplicate, return first result.
+   - TTL on keys to avoid unbounded storage.
+   - Example code (Java/Spring + Redis):
+     ```java
+     // Pseudocode sketch
+     String idempotencyKey = request.getHeader("Idempotency-Key");
+     String redisKey = "idemp:" + idempotencyKey;
+     if (redis.exists(redisKey)) {
+         return redis.get(redisKey); // Return cached result
+     }
+     String result = processPayment(request);
+     redis.set(redisKey, result, "EX", 86400); // 1 day expiry
+     return result;
+     ```
+**5. Distributed Counters (Redis):**
+   - Use Redis INCR/EXPIRE for atomic per-user or per-API counters.
+   - Monitor for hot keys (single user/region dominating traffic).
+**6. Fairness Across Regions:**
+   - Use per-region counters and global quotas.
+   - Consider "rate limiter sharding" for global fairness.
+
+**Signals:**
+- 429/503 rates, per-user/region counters, Redis latency, idempotency key TTL expiry, retry attempts per request.
+
+**Trade-offs:**
+- Tighter limits may block legitimate spikes; looser limits risk overload.
+- Redis/DB as single point of failure for counters.
+- Idempotency key storage may grow in high-volume systems.
+
+**Failure modes:**
+- Hot key in Redis causes throttling for all users.
+- Leaky bucket too strict—legitimate bursts dropped.
+- Retry storms exhaust downstream DB or payment processor.
+- Idempotency key not required—duplicate payments.
+
+**Signals/Trade-offs/Failure-modes Blocks:**
+> **Signals:** 429/503 rates, Redis/DB latency, per-region quota utilization, idempotency key collision/expiry metrics.
+> **Trade-offs:** Burst tolerance vs. fairness, infra cost, storage growth, client experience.
+> **Failure modes:** Key skew, global quota exhaustion, retry amplification, idempotency bypass.
+
+---
 ### Q1.2: Troubleshooting Pod Failures
 **Question:** A critical production pod keeps crashing with OOMKilled status. Walk me through your investigation and resolution process.
 
@@ -91,6 +295,13 @@ apiServer:
    kubectl get pod <pod-name> -n <namespace> -o yaml
    ```
    Look for `lastState.terminated.reason: OOMKilled`
+
+✅ Strong signals:
+- You distinguish **Java-level OOME** (JVM can log/heapdump) vs **cgroup OOMKilled** (kernel kills process; JVM may not dump).
+- You confirm whether the pod shows `Reason: OOMKilled` and correlate with container `limits.memory`.
+
+⚠️ Pitfalls:
+- Assuming `-XX:+HeapDumpOnOutOfMemoryError` always works in Kubernetes.
 
 2. **Analyze Resource Limits**:
    ```yaml
@@ -118,13 +329,21 @@ We had a Java microservice experiencing OOMKilled errors during peak traffic (Bl
   ```yaml
   env:
   - name: JAVA_OPTS
-    value: "-Xms1g -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+    value: "-Xms1g -Xmx1536m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps"
   resources:
     requests:
       memory: "1536Mi"
     limits:
       memory: "2048Mi"
   ```
+  # Important: heap dumps must write to storage that survives restarts.
+  volumeMounts:
+  - name: dumps
+    mountPath: /dumps
+  volumes:
+  - name: dumps
+    persistentVolumeClaim:
+      claimName: heapdump-pvc
   - Implemented cache eviction policies (LRU with max size)
   - Added heap dump on OOM: `-XX:+HeapDumpOnOutOfMemoryError`
   - Set up alerts for memory usage >80%
@@ -136,6 +355,7 @@ We had a Java microservice experiencing OOMKilled errors during peak traffic (Bl
   - Review data structures and algorithms for efficiency
   - Consider horizontal scaling with more replica pods
   - Use HPA with memory metrics
+  - Also reduce off-heap usage (Netty direct buffers, thread stacks) and set headroom: keep `-Xmx` well below pod memory limit.
 
 **Follow-up Depth 2:** How do you prevent similar issues in the future?
 - **Answer**: Proactive monitoring and load testing
@@ -147,6 +367,85 @@ We had a Java microservice experiencing OOMKilled errors during peak traffic (Bl
 
 ---
 
+## 6A. Messaging & Eventing (Kafka/Queues) – Real-World Failure Modes
+
+### Q6A.1: What are common failure modes in Kafka/queue-based architectures and how do you detect and mitigate them?
+
+**Answer:**
+**Decision:** Design for observability and resilience: monitor consumer lag, handle poison messages with DLQ/parking, rebalance gently, enforce partition key discipline, and implement effective-once semantics.
+
+**Signals:**
+- Consumer lag metrics (Kafka: `consumer_lag`, SQS: `ApproximateAgeOfOldestMessage`).
+- Number of messages in DLQ/parking topics.
+- Frequency of consumer group rebalances.
+- Partition utilization (key skew).
+- Duplicate or out-of-order message detection.
+
+**Trade-offs:**
+- Parking/Dead-lettering can delay real error resolution.
+- Strong ordering guarantees require fewer partitions (limits parallelism).
+- Effective-once semantics require extra infra (idempotency store).
+- Rebalance tuning may delay progress on membership changes.
+
+**Failure modes:**
+- **Consumer Lag:** Slow or stuck consumers, leading to backlog and higher end-to-end latency.
+- **Poison Messages:** Bad message causes repeated failures; can block partition (Kafka) or cause retries (SQS).
+- **Rebalance Storms:** Too-frequent consumer group changes cause loss of progress, increased latency.
+- **Key Skew:** Some partitions get most traffic, causing hot spots and lag.
+- **Effective-once Semantics:** Idempotency not enforced, leading to duplicate processing.
+- **Ordering Guarantees:** Lost if consumer restarts mid-batch or due to multi-threaded consumption.
+
+**Key Practices:**
+1. **Monitor Consumer Lag:**
+   - Kafka: `kafka.consumer:type=consumer-fetch-manager-metrics,client-id=*,records-lag`
+   - Alert on lag > threshold.
+2. **Poison Message Handling:**
+   - Use retry with max attempts, then move to DLQ/parking topic.
+   - Example (Kafka Streams):
+     ```java
+     try {
+         process(record);
+     } catch (Exception e) {
+         if (attempts > 3) {
+             kafkaProducer.send("parking-topic", record);
+         } else {
+             throw e; // Will be retried
+         }
+     }
+     ```
+3. **Rebalance Storm Mitigation:**
+   - Tune `session.timeout.ms`, `max.poll.interval.ms` to avoid rapid rebalances.
+   - Use static group membership where possible.
+4. **Key Skew Detection:**
+   - Monitor partition lag and throughput per partition.
+   - Use better partitioning keys; consider hashing.
+5. **Effective-once Semantics:**
+   - Store processed message IDs in Redis/DB to deduplicate.
+   - Use Kafka's transactional producer/consumer APIs for exactly-once where possible.
+6. **Ordering Guarantees:**
+   - Only one consumer per partition for strict ordering.
+   - For SQS/FIFO: use MessageGroupId.
+
+**Signals:**
+- Consumer lag, partition lag distribution, DLQ fill rate, rebalance frequency, duplicate detection metrics.
+
+**Trade-offs:**
+- DLQ/parking topics can mask underlying issues.
+- More partitions = more parallelism but weaker ordering.
+- Idempotency store adds latency and cost.
+
+**Failure modes:**
+- Lag buildup leads to missed SLAs.
+- Poison message floods DLQ.
+- Rapid rebalances reduce throughput.
+- Key skew causes some consumers to be overloaded.
+
+**Signals/Trade-offs/Failure-modes Blocks:**
+> **Signals:** Consumer lag, partition lag, DLQ fill, rebalance events, duplicate/out-of-order metrics.
+> **Trade-offs:** Throughput vs. ordering, operational complexity, cost of idempotency, visibility into failures.
+> **Failure modes:** Lag, stuck partitions, DLQ overflow, rebalance storms, duplicate processing.
+
+---
 ### Q1.3: Kubernetes Networking Deep Dive
 **Question:** Explain how packet flows from an external client to a pod in your cluster. What happens when you have multiple replicas behind a Service?
 
@@ -199,7 +498,14 @@ External Client → LoadBalancer → Ingress Controller → Service → Pod
    - Kube-proxy maintains iptables/IPVS rules
    - Service IP is virtual (not assigned to any interface)
    - Traffic is load-balanced via DNAT rules to pod IPs
-   - Default algorithm: Round-robin (IPVS) or random (iptables)
+   - Kube-proxy mode matters: **IPVS** provides consistent L4 load-balancing; **iptables** uses probabilistic DNAT rules (effectively random-ish under churn).
+✅ Strong signals:
+- You mention where load-balancing happens (**cloud LB**, **Ingress**, **kube-proxy**).
+- You call out the real debug split: **DNS**, **Service routing (iptables/IPVS)**, **CNI dataplane (Calico/Cilium)**.
+
+⚠️ Pitfalls:
+- Treating Service IP as a real interface IP (it’s virtual).
+- Ignoring NodePort/health-check paths used by cloud load balancers.
 
 **Real Project Example:**
 We implemented session affinity for a stateful application:
@@ -318,6 +624,14 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
        apt-get clean && \
        rm -rf /var/lib/apt/lists/*
    ```
+
+✅ Strong signals:
+- You mention **SBOM** (Software Bill of Materials) generation and signature verification (cosign).
+- You pin base images by digest for reproducibility.
+
+⚠️ Pitfalls:
+- Using `latest` tags in production.
+- Installing build tools in runtime images.
 
 **Real Project Example:**
 Optimized a Node.js application image from 1.2GB to 180MB:
@@ -457,7 +771,7 @@ Production issue where containers became unresponsive during high load:
 **Answer:**
 **Architecture Components:**
 ```
-Route53 (Global DNS) 
+Route 53 (DNS) or Global Accelerator (GA) (Anycast) for global routing
   ↓
 CloudFront (CDN)
   ↓
@@ -544,7 +858,7 @@ Designed multi-region architecture for fintech application requiring 99.99% upti
 **Disaster Recovery Strategy:**
 - **RPO**: 1 minute (Aurora Global Database lag)
 - **RTO**: 5 minutes (automated failover)
-- Route53 health checks with automatic DNS failover
+- Route 53 health checks (DNS failover; TTL-dependent) **or** Global Accelerator (faster traffic shift; not TTL-dependent)
 - Database promotion automated via Lambda
 
 **Follow-up Depth 1:** How do you handle database failover and data consistency?
@@ -559,6 +873,7 @@ Designed multi-region architecture for fintech application requiring 99.99% upti
   - Connection string uses DNS CNAME pointing to writer endpoint
   - Application implements retry logic with exponential backoff
   - Read replicas promoted only after write operations stopped
+  ✅ Strong signals: you state that Aurora Global Database is typically **single-writer**; promotion is controlled and requires app retry + connection draining.
 
 **Follow-up Depth 2:** What's your cost optimization strategy for this architecture?
 - **Answer**: Multi-pronged approach
@@ -587,7 +902,7 @@ VPC (10.0.0.0/16)
 ├── Public Subnets (10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24)
 │   ├── NAT Gateways (one per AZ)
 │   ├── Application Load Balancers
-│   └── Bastion Hosts (in ASG)
+│   └── SSM Session Manager access (prefer no bastion); if required, tightly locked bastion
 ├── Private Subnets - App (10.0.10.0/24, 10.0.11.0/24, 10.0.12.0/24)
 │   ├── EKS Worker Nodes
 │   └── Application Containers
@@ -680,6 +995,7 @@ resource "aws_network_acl" "private_app" {
 **Real Project Example:**
 Implemented zero-trust network architecture for healthcare application:
 - **VPC Endpoints**: Private connectivity to S3, DynamoDB, ECR (no internet)
+- **Egress control**: centralized egress via NAT Gateway (NAT GW) or Network Firewall; deny-by-default outbound for sensitive subnets
 - **Transit Gateway**: Connected multiple VPCs (dev, staging, prod) with route tables
 - **AWS PrivateLink**: Exposed internal APIs to partner VPCs
 - **Flow Logs**: All VPC traffic logged to S3 for compliance
@@ -971,6 +1287,13 @@ stages:
                   echo "Error rate too high: $ERROR_RATE"
                   exit 1
                 fi
+
+✅ Strong signals:
+- You define explicit SLO gates (error rate, latency, saturation) and an automated rollback trigger.
+- You keep deployment idempotent and observable (one pipeline run == one version).
+
+⚠️ Pitfalls:
+- Only checking 5xx errors; ignoring latency and dependency saturation.
         
         on:
           failure:
@@ -1224,6 +1547,12 @@ Managed 500+ servers across multiple data centers with Chef:
 - **Automated Bootstrap**: New servers register and configure automatically
 - **Compliance Scanning**: InSpec profiles for CIS benchmarks
 
+✅ Strong signals:
+- You talk about **drift detection** (periodic converge + reporting) and safe rollout rings.
+
+⚠️ Pitfalls:
+- Writing `execute` blocks without guards, breaking idempotency.
+
 **Follow-up Depth 1:** How do you handle secrets in Chef cookbooks?
 - **Answer**: Chef Vault or encrypted data bags
   ```bash
@@ -1260,7 +1589,18 @@ Managed 500+ servers across multiple data centers with Chef:
 **Question:** Your production Kubernetes cluster is experiencing intermittent latency spikes. Walk me through your investigation process.
 
 **Answer:**
+
+✅ Strong signals:
+- You run a decision tree: **Is it app (GC/thread pool), platform (CPU throttling), network (DNS/CNI), or dependency (DB/queue)?**
+- You correlate p99 latency with one resource saturation signal.
+
 **Systematic Debugging Approach:**
+
+**Incident command:**
+- **Severity declaration:** Triage and declare incident severity (SEV-1, SEV-2, etc.) based on business/user impact and SLO breach.
+- **Role assignment:** Assign clear roles (Incident Commander, Scribe, Comms, Subject Matter Experts).
+- **Deploy freeze:** Freeze non-essential deployments/changes to preserve state.
+- **Hypothesis tracking:** Maintain a shared doc/channel for hypotheses, actions, evidence, and timeline.
 
 **1. Gather Symptoms:**
 ```bash
@@ -1600,3 +1940,49 @@ Adopt Kubernetes (EKS on AWS) over AWS ECS.
 - Demonstrate depth in troubleshooting
 - Explain architectural decisions
 - Discuss failure scenarios and remediation
+
+
+---
+
+## Abbreviations (expanded)
+- **HA — High Availability**
+- **AZ — Availability Zone**
+- **RPO — Recovery Point Objective**
+- **RTO — Recovery Time Objective**
+- **SLO — Service Level Objective**
+- **SLI — Service Level Indicator**
+- **GA — Global Accelerator**
+- **TTL — Time-to-live**
+- **BGP — Border Gateway Protocol**
+- **NLB — Network Load Balancer**
+- **ALB — Application Load Balancer**
+- **EKS — Elastic Kubernetes Service**
+- **ECS — Elastic Container Service**
+- **CNI — Container Network Interface**
+- **RBAC — Role-Based Access Control**
+- **PSA — Pod Security Admission**
+- **HPA — Horizontal Pod Autoscaler**
+- **PDB — Pod Disruption Budget**
+- **OOM — Out Of Memory**
+- **JVM — Java Virtual Machine**
+- **APIGW — Amazon API Gateway**
+- **SQS — Simple Queue Service**
+- **DLQ — Dead-Letter Queue**
+- **SSM — Systems Manager**
+- **NAT GW — NAT Gateway**
+- **EBS — Elastic Block Store**
+- **EIP — Elastic IP**
+- **SBOM — Software Bill of Materials**
+ - **MTTR — Mean Time To Recovery**
+ - **MTTD — Mean Time To Detect**
+ - **P99 — 99th percentile (latency or metric)**
+ - **RPS — Requests Per Second**
+ - **QPS — Queries Per Second**
+ - **WAF — Web Application Firewall**
+ - **OPA — Open Policy Agent**
+ - **SRE — Site Reliability Engineering/Engineer**
+ - **IaC — Infrastructure as Code**
+ - **GitOps — Git-driven operations (infra/config as code)**
+ - **SLSA — Supply chain Levels for Software Artifacts**
+ - **SLA — Service Level Agreement**
+ - **CVE — Common Vulnerabilities and Exposures**
