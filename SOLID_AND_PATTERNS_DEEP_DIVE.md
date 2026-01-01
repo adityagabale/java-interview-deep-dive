@@ -16,7 +16,8 @@ When you're a Principal Architect, you aren't paid to write code that works. You
 We are going to go through each principle, starting with a simple explanation for a child, showing some clear code, and then drilling down **10 levels deep** into the nuance.
 
 ---
-
+7304455444
+3
 ## 2. The S.O.L.I.D Principles
 
 ### 2.1 SRP: The Single Responsibility Principle
